@@ -16,6 +16,7 @@ import type {
   InvestigationEdge,
   InvestigationNode,
 } from "../models/types";
+import { buildMaterialSnapshot } from "./materialSnapshot";
 
 export interface MockDatabase {
   alerts: Alert[];
@@ -39,6 +40,37 @@ const createSeedDatabase = (): MockDatabase => ({
   auditLogs: structuredClone(seedAuditLogs),
 });
 
+/**
+ * 为历史结论补建材料快照：旧版本本地数据没有快照字段，
+ * 用该案件当前材料回填，保证结论卡片能正常渲染绑定材料。
+ */
+const migrateDatabase = (database: MockDatabase): MockDatabase => {
+  let changed = false;
+  database.conclusions = database.conclusions.map((conclusion) => {
+    if (conclusion.materialSnapshot) {
+      return conclusion;
+    }
+    changed = true;
+    const evidence = database.evidence.filter(
+      (item) => item.caseId === conclusion.caseId,
+    );
+    const nodes = database.nodes.filter(
+      (item) => item.caseId === conclusion.caseId,
+    );
+    const edges = database.edges.filter(
+      (item) => item.caseId === conclusion.caseId,
+    );
+    return {
+      ...conclusion,
+      materialSnapshot: buildMaterialSnapshot(evidence, nodes, edges),
+    };
+  });
+  if (changed) {
+    writeDatabase(database);
+  }
+  return database;
+};
+
 export const readDatabase = (): MockDatabase => {
   if (typeof window === "undefined") {
     return createSeedDatabase();
@@ -52,7 +84,7 @@ export const readDatabase = (): MockDatabase => {
   }
 
   try {
-    return JSON.parse(stored) as MockDatabase;
+    return migrateDatabase(JSON.parse(stored) as MockDatabase);
   } catch {
     const seeded = createSeedDatabase();
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));

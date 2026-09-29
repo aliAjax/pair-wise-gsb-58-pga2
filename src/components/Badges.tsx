@@ -47,6 +47,7 @@ const conclusionMap: Record<
   submitted: { color: "orange", label: "待复核" },
   approved: { color: "teal", label: "已通过" },
   returned: { color: "red", label: "已退回" },
+  stale: { color: "red", label: "材料已变更" },
 };
 
 interface BadgeProps<T extends string> {

@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  Collapse,
   Divider,
   Grid,
   Group,
@@ -17,18 +18,24 @@ import {
   Textarea,
   TextInput,
   Title,
+  Tooltip,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
   FilePlus2,
   GitBranchPlus,
+  Paperclip,
+  PlusCircle,
   RotateCcw,
   Send,
+  SendHorizontal,
+  TriangleAlert,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "../app/hooks";
 import {
@@ -49,6 +56,7 @@ import {
 } from "../features/timeline/TransactionTimeline";
 import type {
   CaseDisposition,
+  ConclusionVersion,
   EvidenceStrength,
   NodeKind,
   RiskLevel,
@@ -63,6 +71,12 @@ import {
   useTransitionCaseMutation,
   useUpdateGraphNodeMutation,
 } from "../services/api";
+import {
+  buildMaterialSnapshot,
+  diffAddedMaterials,
+  diffMaterialChanges,
+  snapshotKindLabels,
+} from "../services/materialSnapshot";
 import { createId, nowIso } from "../services/mockStorage";
 
 const dispositionLabels: Record<CaseDisposition, string> = {
@@ -77,6 +91,121 @@ const errorMessage = (error: unknown): string => {
   }
   return "操作失败，请检查输入后重试。";
 };
+
+const kindColor: Record<string, string> = {
+  evidence: "blue",
+  node: "grape",
+  edge: "cyan",
+};
+
+/** 结论版本绑定的材料快照（只读，保留提交时刻状态） */
+function SnapshotBlock({ item }: { item: ConclusionVersion }) {
+  const [opened, setOpened] = useState(false);
+  const snapshot = item.materialSnapshot;
+  return (
+    <Paper withBorder radius="sm" bg="gray.0" p="xs">
+      <Group justify="space-between" gap="xs">
+        <Group gap={6}>
+          <Paperclip size={13} />
+          <Text size="xs" fw={600}>
+            绑定材料快照
+          </Text>
+          <Badge size="xs" variant="light" color="blue">
+            证据 {snapshot.evidenceIds.length}
+          </Badge>
+          <Badge size="xs" variant="light" color="grape">
+            节点 {snapshot.nodeIds.length}
+          </Badge>
+          <Badge size="xs" variant="light" color="cyan">
+            关系 {snapshot.edgeIds.length}
+          </Badge>
+        </Group>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          rightSection={
+            <ChevronDown
+              size={13}
+              style={{
+                transform: opened ? "rotate(180deg)" : "none",
+                transition: "transform 120ms",
+              }}
+            />
+          }
+          onClick={() => setOpened((value) => !value)}
+        >
+          {opened ? "收起" : "查看快照"}
+        </Button>
+      </Group>
+      <Collapse expanded={opened}>
+        <Stack gap={4} mt="xs">
+          {snapshot.items.length === 0 ? (
+            <Text size="xs" c="dimmed">
+              提交时案件尚无已登记材料。
+            </Text>
+          ) : (
+            snapshot.items.map((material) => (
+              <Group key={`${material.kind}-${material.id}`} gap={6} wrap="nowrap">
+                <Badge
+                  size="xs"
+                  variant="dot"
+                  color={kindColor[material.kind]}
+                >
+                  {snapshotKindLabels[material.kind]}
+                </Badge>
+                <Text size="xs" fw={600} span>
+                  {material.label}
+                </Text>
+                <Text size="xs" c="dimmed" span>
+                  {material.detail}
+                </Text>
+              </Group>
+            ))
+          )}
+        </Stack>
+      </Collapse>
+    </Paper>
+  );
+}
+
+/** 新版本相比上一版多出的材料清单 */
+function AddedMaterialsBlock({ item }: { item: ConclusionVersion }) {
+  if (!item.baseVersion || !item.addedMaterials) {
+    return null;
+  }
+  return (
+    <Alert color="indigo" icon={<PlusCircle size={15} />} p="xs">
+      <Text size="xs" fw={700}>
+        相比 V{item.baseVersion} 新增 {item.addedMaterials.length} 项材料
+      </Text>
+      {item.addedMaterials.length > 0 ? (
+        <Stack gap={4} mt={6}>
+          {item.addedMaterials.map((material) => (
+            <Group
+              key={`${material.kind}-${material.id}`}
+              gap={6}
+              wrap="nowrap"
+            >
+              <Badge size="xs" variant="dot" color={kindColor[material.kind]}>
+                {snapshotKindLabels[material.kind]}
+              </Badge>
+              <Text size="xs" fw={600} span>
+                {material.label}
+              </Text>
+              <Text size="xs" c="dimmed" span>
+                {material.detail}
+              </Text>
+            </Group>
+          ))}
+        </Stack>
+      ) : (
+        <Text size="xs" c="dimmed" mt={4}>
+          证据与关系线索与上一版一致，本版仅调整结论内容。
+        </Text>
+      )}
+    </Alert>
+  );
+}
 
 export function CaseDetailPage() {
   const { caseId = "" } = useParams();
@@ -140,6 +269,48 @@ export function CaseDetailPage() {
     riskControls: "",
   });
 
+  /** 当前材料全集快照，用于实时比对提交后的变化 */
+  const currentSnapshot = useMemo(
+    () =>
+      data
+        ? buildMaterialSnapshot(data.evidence, data.nodes, data.edges)
+        : undefined,
+    [data],
+  );
+  /** 最新一个进入复核流程的版本（草稿不算），复核操作只针对它 */
+  const latestSubmitted = data
+    ? (data.conclusions.find((item) => item.status !== "draft") ??
+      data.conclusions[0])
+    : undefined;
+  const liveChanges = useMemo(() => {
+    if (!data || !latestSubmitted) {
+      return [];
+    }
+    return diffMaterialChanges(
+      latestSubmitted.materialSnapshot,
+      data.evidence,
+      data.nodes,
+      data.edges,
+      nowIso(),
+    );
+  }, [latestSubmitted, data]);
+  /** 调查员新建结论时将绑定的材料，以及相对上一版多出的材料 */
+  const pendingAdded = useMemo(() => {
+    if (!data || !currentSnapshot) {
+      return undefined;
+    }
+    const previous = data.conclusions[0];
+    return {
+      counts: {
+        evidence: currentSnapshot.evidenceIds.length,
+        nodes: currentSnapshot.nodeIds.length,
+        edges: currentSnapshot.edgeIds.length,
+      },
+      added: diffAddedMaterials(currentSnapshot, previous?.materialSnapshot),
+      previousVersion: previous?.version,
+    };
+  }, [currentSnapshot, data]);
+
   if (isLoading) {
     return <Text>正在加载案件工作区...</Text>;
   }
@@ -156,7 +327,18 @@ export function CaseDetailPage() {
     data.case.alertIds.includes(item.id),
   );
   const selectedNode = data.nodes.find((item) => item.id === selectedNodeId);
-  const latestConclusion = data.conclusions[0];
+  const latestConclusion = latestSubmitted;
+  /** 已存在结论快照中均未包含的证据：提示这些材料尚未被任何版本引用 */
+  const unboundEvidenceIds = new Set(
+    data.evidence
+      .filter((item) =>
+        data.conclusions.every(
+          (conclusion) =>
+            !conclusion.materialSnapshot.evidenceIds.includes(item.id),
+        ),
+      )
+      .map((item) => item.id),
+  );
 
   const handleTimelineFocus = (event?: TimelineEvent) => {
     dispatch(focusTimeline(event?.id));
@@ -330,7 +512,9 @@ export function CaseDetailPage() {
     }
   };
 
-  const handleReview = async (decision: "approve" | "return") => {
+  const handleReview = async (
+    decision: "approve" | "return" | "resubmit",
+  ) => {
     if (!latestConclusion) {
       return;
     }
@@ -338,7 +522,10 @@ export function CaseDetailPage() {
       notifications.show({
         color: "red",
         title: "复核意见不足",
-        message: "复核意见至少需要 6 个字符。",
+        message:
+          decision === "resubmit"
+            ? "通知重新提交时，请至少填写 6 个字说明材料变化与要求。"
+            : "复核意见至少需要 6 个字符。",
       });
       return;
     }
@@ -350,9 +537,22 @@ export function CaseDetailPage() {
         reviewerNote: reviewNote.trim(),
       }).unwrap();
       notifications.show({
-        color: decision === "approve" ? "teal" : "orange",
-        title: decision === "approve" ? "复核通过" : "已退回补证",
-        message: "复核动作和意见已写入审计日志。",
+        color:
+          decision === "approve"
+            ? "teal"
+            : decision === "resubmit"
+              ? "red"
+              : "orange",
+        title:
+          decision === "approve"
+            ? "复核通过"
+            : decision === "resubmit"
+              ? "已通知重新提交"
+              : "已退回补证",
+        message:
+          decision === "resubmit"
+            ? "原结论保留材料快照，调查员需基于新材料提交新版本。"
+            : "复核动作和意见已写入审计日志。",
       });
       setReviewNote("");
     } catch (mutationError) {
@@ -611,6 +811,17 @@ export function CaseDetailPage() {
                         <Text size="xs" c="dimmed" ff="monospace">
                           {item.id}
                         </Text>
+                        {unboundEvidenceIds.has(item.id) ? (
+                          <Badge
+                            size="xs"
+                            mt={4}
+                            variant="light"
+                            color="red"
+                            leftSection={<TriangleAlert size={10} />}
+                          >
+                            未纳入任何结论版本
+                          </Badge>
+                        ) : null}
                       </Table.Td>
                       <Table.Td>{item.source}</Table.Td>
                       <Table.Td>
@@ -674,6 +885,13 @@ export function CaseDetailPage() {
                             <Badge variant="light" color="gray">
                               {dispositionLabels[item.disposition]}
                             </Badge>
+                            {item.baseVersion ? (
+                              <Tooltip label={`基于 V${item.baseVersion} 修订`}>
+                                <Badge variant="outline" color="indigo">
+                                  基于 V{item.baseVersion}
+                                </Badge>
+                              </Tooltip>
+                            ) : null}
                           </Group>
                           <Text size="xs" c="dimmed">
                             {item.createdBy} ·{" "}
@@ -690,10 +908,83 @@ export function CaseDetailPage() {
                             </Badge>
                           ))}
                         </Group>
+                        <SnapshotBlock item={item} />
+                        <AddedMaterialsBlock item={item} />
+                        {item.status === "stale" &&
+                        item.id === latestSubmitted?.id &&
+                        liveChanges.length > 0 ? (
+                          <Alert
+                            color="red"
+                            icon={<TriangleAlert size={16} />}
+                            title={
+                              item.resubmitRequested
+                                ? "复核人已通知重新提交：本版提交后材料发生变化"
+                                : "提交后材料已经变化，原结论不能按旧快照生效"
+                            }
+                          >
+                            <Stack gap={4}>
+                              {liveChanges.map((change) => (
+                                <Group
+                                  key={`${change.kind}-${change.id}`}
+                                  gap={6}
+                                  wrap="nowrap"
+                                >
+                                  <Badge
+                                    size="xs"
+                                    color={
+                                      change.change === "added" ? "teal" : "gray"
+                                    }
+                                    variant={
+                                      change.change === "added"
+                                        ? "light"
+                                        : "outline"
+                                    }
+                                  >
+                                    {change.change === "added"
+                                      ? "新增"
+                                      : "删除"}
+                                  </Badge>
+                                  <Badge
+                                    size="xs"
+                                    variant="dot"
+                                    color={kindColor[change.kind]}
+                                  >
+                                    {snapshotKindLabels[change.kind]}
+                                  </Badge>
+                                  <Text size="xs" fw={600} span>
+                                    {change.label}
+                                  </Text>
+                                </Group>
+                              ))}
+                            </Stack>
+                            <Text size="xs" mt={8}>
+                              案件已回到待补证，复核人只能退回或让调查员重新提交；
+                              重新提交后将生成新版本，本版保留原快照作为历史记录。
+                            </Text>
+                          </Alert>
+                        ) : null}
+                        {item.status === "stale" &&
+                        (item.materialChanges?.length ?? 0) > 0 &&
+                        item.id !== latestSubmitted?.id ? (
+                          <Alert
+                            color="red"
+                            icon={<TriangleAlert size={16} />}
+                            title="该版本提交后材料发生过变化（历史快照）"
+                          >
+                            <Text size="xs">
+                              共记录 {item.materialChanges?.length ?? 0}{" "}
+                              项变化，已由新版本接续，本版快照保持不变。
+                            </Text>
+                          </Alert>
+                        ) : null}
                         {item.reviewerNote ? (
                           <Alert
                             color={
-                              item.status === "approved" ? "teal" : "orange"
+                              item.status === "approved"
+                                ? "teal"
+                                : item.status === "stale"
+                                  ? "red"
+                                  : "orange"
                             }
                             title={`复核意见 · ${item.reviewer}`}
                           >
@@ -710,48 +1001,105 @@ export function CaseDetailPage() {
               <Paper withBorder p="md">
                 <Title order={4}>复核操作</Title>
                 {latestConclusion ? (
-                  <>
-                    <Text size="sm" c="dimmed" mt={5}>
-                      当前版本 V{latestConclusion.version} ·{" "}
-                      {dispositionLabels[latestConclusion.disposition]}
-                    </Text>
-                    <Alert
-                      color="orange"
-                      icon={<RotateCcw size={16} />}
-                      mt="md"
-                    >
-                      关系关联不能直接作为结论。通过前应检查证据来源、发生时间与证据强度。
-                    </Alert>
-                    <Textarea
-                      label="复核意见"
-                      description="通过或退回意见均进入不可删除的审计记录"
-                      minRows={4}
-                      mt="md"
-                      value={reviewNote}
-                      onChange={(event) =>
-                        setReviewNote(event.currentTarget.value)
-                      }
-                    />
-                    <Group mt="md">
-                      <Button
-                        leftSection={<Check size={16} />}
-                        color="teal"
-                        loading={isReviewing}
-                        onClick={() => handleReview("approve")}
-                      >
-                        复核通过
-                      </Button>
-                      <Button
-                        variant="light"
-                        color="orange"
-                        leftSection={<RotateCcw size={16} />}
-                        loading={isReviewing}
-                        onClick={() => handleReview("return")}
-                      >
-                        退回补证
-                      </Button>
-                    </Group>
-                  </>
+                  (() => {
+                    const isStale = latestConclusion.status === "stale";
+                    const isReviewable =
+                      latestConclusion.status === "submitted" || isStale;
+                    return (
+                      <>
+                        <Group gap="xs" mt={5}>
+                          <Text size="sm" c="dimmed">
+                            当前版本 V{latestConclusion.version} ·{" "}
+                            {dispositionLabels[latestConclusion.disposition]}
+                          </Text>
+                          <ConclusionStatusBadge
+                            value={latestConclusion.status}
+                          />
+                        </Group>
+                        <SnapshotBlock item={latestConclusion} />
+                        {isStale ? (
+                          <Alert
+                            color="red"
+                            icon={<TriangleAlert size={16} />}
+                            mt="md"
+                            title="该结论提交后材料已经变化"
+                          >
+                            <Text size="sm">
+                              已检测到 {liveChanges.length} 项材料增减。原结论缺少这些材料，
+                              <b>不能通过</b>。只能退回补证，或让调查员基于新材料重新提交新版本。
+                            </Text>
+                          </Alert>
+                        ) : isReviewable ? (
+                          <Alert
+                            color="orange"
+                            icon={<RotateCcw size={16} />}
+                            mt="md"
+                          >
+                            关系关联不能直接作为结论。通过前应核对上方绑定快照中的证据来源、发生时间与证据强度。
+                          </Alert>
+                        ) : null}
+                        {isReviewable ? (
+                          <>
+                            <Textarea
+                              label="复核意见"
+                              description={
+                                isStale
+                                  ? "退回或要求重新提交的意见均进入不可删除的审计记录"
+                                  : "通过、退回或要求重新提交的意见均进入不可删除的审计记录"
+                              }
+                              minRows={4}
+                              mt="md"
+                              value={reviewNote}
+                              onChange={(event) =>
+                                setReviewNote(event.currentTarget.value)
+                              }
+                            />
+                            <Group mt="md">
+                              <Tooltip
+                                label="提交后材料已变化，缺少新材料的结论不能通过"
+                                disabled={!isStale}
+                              >
+                                <Button
+                                  leftSection={<Check size={16} />}
+                                  color="teal"
+                                  loading={isReviewing}
+                                  disabled={isStale}
+                                  onClick={() => handleReview("approve")}
+                                >
+                                  复核通过
+                                </Button>
+                              </Tooltip>
+                              {isStale ? (
+                                <Button
+                                  color="red"
+                                  leftSection={<SendHorizontal size={16} />}
+                                  loading={isReviewing}
+                                  onClick={() => handleReview("resubmit")}
+                                >
+                                  通知重新提交
+                                </Button>
+                              ) : null}
+                              <Button
+                                variant="light"
+                                color="orange"
+                                leftSection={<RotateCcw size={16} />}
+                                loading={isReviewing}
+                                onClick={() => handleReview("return")}
+                              >
+                                退回补证
+                              </Button>
+                            </Group>
+                          </>
+                        ) : (
+                          <Text size="sm" c="dimmed" mt="md">
+                            {latestConclusion.status === "draft"
+                              ? "最新版本仍是草稿，调查员提交复核后才能进行复核操作。"
+                              : "当前版本已处理完毕；如需修改，请由调查员新建结论版本。"}
+                          </Text>
+                        )}
+                      </>
+                    );
+                  })()
                 ) : (
                   <Text c="dimmed" mt="md">
                     尚无结论版本。
@@ -1098,6 +1446,57 @@ export function CaseDetailPage() {
         <Alert color="gray" mt="md">
           保存草稿不会触发复核；提交后生成独立版本并进入待复核状态。
         </Alert>
+        {pendingAdded ? (
+          <Paper withBorder radius="sm" bg="blue.0" p="sm" mt="md">
+            <Group gap={6}>
+              <Paperclip size={14} />
+              <Text size="xs" fw={700}>
+                本版本将绑定当前全部材料：证据 {pendingAdded.counts.evidence} 项、
+                节点 {pendingAdded.counts.nodes} 个、关系 {pendingAdded.counts.edges} 条
+              </Text>
+            </Group>
+            {pendingAdded.previousVersion ? (
+              <Text size="xs" mt={6} fw={700} c="indigo">
+                相比 V{pendingAdded.previousVersion} 多出 {pendingAdded.added.length} 项材料：
+              </Text>
+            ) : null}
+            {pendingAdded.previousVersion &&
+            pendingAdded.added.length > 0 ? (
+              <Stack gap={4} mt={4}>
+                {pendingAdded.added.map((material) => (
+                  <Group
+                    key={`${material.kind}-${material.id}`}
+                    gap={6}
+                    wrap="nowrap"
+                  >
+                    <Badge
+                      size="xs"
+                      variant="dot"
+                      color={kindColor[material.kind]}
+                    >
+                      {snapshotKindLabels[material.kind]}
+                    </Badge>
+                    <Text size="xs" fw={600} span>
+                      {material.label}
+                    </Text>
+                    <Text size="xs" c="dimmed" span>
+                      {material.detail}
+                    </Text>
+                  </Group>
+                ))}
+              </Stack>
+            ) : null}
+            {pendingAdded.previousVersion &&
+            pendingAdded.added.length === 0 ? (
+              <Text size="xs" c="dimmed" mt={4}>
+                材料与上一版完全一致，本版仅调整结论内容。
+              </Text>
+            ) : null}
+            <Text size="xs" c="dimmed" mt={6}>
+              提交后这些证据和关系将与版本绑定；若再发生增减，本版会标记为材料已变化，须重新提交才能通过。
+            </Text>
+          </Paper>
+        ) : null}
         <Group justify="flex-end" mt="lg">
           <Button variant="default" onClick={conclusionModal.close}>
             取消

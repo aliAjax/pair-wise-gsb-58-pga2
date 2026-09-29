@@ -7,6 +7,7 @@ import type {
   InvestigationEdge,
   InvestigationNode,
 } from "../models/types";
+import { buildMaterialSnapshot } from "../services/materialSnapshot";
 
 export const seedAlerts: Alert[] = [
   {
@@ -274,6 +275,34 @@ export const seedNodes: InvestigationNode[] = [
       occurredAt: "2026-09-25T14:10:00+08:00",
     },
   },
+  {
+    id: "N-1843",
+    caseId: "CASE-2026-016",
+    position: { x: 120, y: 180 },
+    data: {
+      label: "6231 **** 1843",
+      kind: "account",
+      riskLevel: "high",
+      note: "开户 12 小时内多地点集中提现。",
+      evidenceStrength: "strong",
+      source: "核心交易系统提现流水",
+      occurredAt: "2026-09-27T09:14:00+08:00",
+    },
+  },
+  {
+    id: "N-ATM-SH-307",
+    caseId: "CASE-2026-016",
+    position: { x: 480, y: 180 },
+    data: {
+      label: "ATM-SH-307",
+      kind: "device",
+      riskLevel: "medium",
+      note: "提现终端之一，监控与交易时间需进一步核验。",
+      evidenceStrength: "medium",
+      source: "ATM 终端登记",
+      occurredAt: "2026-09-27T09:14:00+08:00",
+    },
+  },
 ];
 
 export const seedEdges: InvestigationEdge[] = [
@@ -328,6 +357,17 @@ export const seedEdges: InvestigationEdge[] = [
     label: "登录 IP",
     occurredAt: "2026-09-28T12:06:00+08:00",
     explanation: "共享 IP 是关联线索，不能单独作为账户控制的结论。",
+  },
+  {
+    id: "E-016-001",
+    caseId: "CASE-2026-016",
+    source: "N-1843",
+    target: "N-ATM-SH-307",
+    kind: "transfer",
+    label: "柜面提现 11.8 万",
+    amount: 118000,
+    occurredAt: "2026-09-27T09:14:00+08:00",
+    explanation: "新开户短期内集中提现，但地点跳跃原因尚未核实，不能单独推定欺诈。",
   },
 ];
 
@@ -384,7 +424,46 @@ export const seedEvidence: Evidence[] = [
     note: "仅证明共同收款方，未证明资金最终归属。",
     version: 1,
   },
+  {
+    id: "EV-016-001",
+    caseId: "CASE-2026-016",
+    title: "ATM 提现流水",
+    source: "核心交易系统",
+    strength: "strong",
+    occurredAt: "2026-09-27T09:14:00+08:00",
+    submittedAt: "2026-09-27T10:40:00+08:00",
+    submittedBy: "周明",
+    attachment: "atm-withdraw-20260927.csv",
+    note: "包含三笔提现的终端编号与时间戳。",
+    version: 1,
+  },
+  {
+    id: "EV-016-002",
+    caseId: "CASE-2026-016",
+    title: "开户影像与身份资料",
+    source: "柜面影像系统",
+    strength: "medium",
+    occurredAt: "2026-09-26T15:20:00+08:00",
+    submittedAt: "2026-09-27T11:05:00+08:00",
+    submittedBy: "周明",
+    attachment: "account-opening-1843.zip",
+    note: "开户人与提现监控比对尚在进行，需等待回访记录。",
+    version: 1,
+  },
 ];
+
+const caseEvidence = (caseId: string) =>
+  seedEvidence.filter((item) => item.caseId === caseId);
+const caseNodes = (caseId: string) =>
+  seedNodes.filter((item) => item.caseId === caseId);
+const caseEdges = (caseId: string) =>
+  seedEdges.filter((item) => item.caseId === caseId);
+const caseSnapshot = (caseId: string) =>
+  buildMaterialSnapshot(
+    caseEvidence(caseId),
+    caseNodes(caseId),
+    caseEdges(caseId),
+  );
 
 export const seedConclusions: ConclusionVersion[] = [
   {
@@ -398,6 +477,7 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "林澜",
     createdAt: "2026-09-29T08:20:00+08:00",
     reviewer: "赵平",
+    materialSnapshot: caseSnapshot("CASE-2026-017"),
   },
   {
     id: "CV-016-001",
@@ -410,6 +490,7 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "周明",
     createdAt: "2026-09-29T07:55:00+08:00",
     reviewer: "赵平",
+    materialSnapshot: caseSnapshot("CASE-2026-016"),
   },
   {
     id: "CV-015-001",
@@ -423,6 +504,7 @@ export const seedConclusions: ConclusionVersion[] = [
     createdAt: "2026-09-28T19:20:00+08:00",
     reviewer: "赵平",
     reviewerNote: "补充商户合同与付款用途后再提交，不得以关联代替结论。",
+    materialSnapshot: caseSnapshot("CASE-2026-015"),
   },
 ];
 
