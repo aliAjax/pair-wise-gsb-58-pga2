@@ -152,12 +152,12 @@ export const seedCases: InvestigationCase[] = [
   {
     id: "CASE-2026-016",
     title: "新开户集中提现核查",
-    status: "pending_review",
+    status: "supplement",
     riskLevel: "high",
     owner: "周明",
     openedAt: "2026-09-27T09:42:00+08:00",
-    updatedAt: "2026-09-29T07:55:00+08:00",
-    summary: "开户后的十二小时内发生多地点 ATM 提现，待复核关联程度。",
+    updatedAt: "2026-09-29T08:40:00+08:00",
+    summary: "开户后的十二小时内发生多地点 ATM 提现，提交复核后又补进异地登录轨迹，等待重新提交。",
     alertIds: ["AL-20260927-012"],
     nextReviewAt: "2026-09-29T11:30:00+08:00",
   },
@@ -172,6 +172,18 @@ export const seedCases: InvestigationCase[] = [
     summary: "受益账户与多个已关闭案件存在交易交集，需要补充交易用途材料。",
     alertIds: ["AL-20260925-018"],
     nextReviewAt: "2026-09-30T10:00:00+08:00",
+  },
+  {
+    id: "CASE-2026-014",
+    title: "商户测试交易套现核查",
+    status: "closed",
+    riskLevel: "low",
+    owner: "宋佳",
+    openedAt: "2026-09-24T10:20:00+08:00",
+    updatedAt: "2026-09-28T17:00:00+08:00",
+    summary: "高频小额测试交易经核实为商户联调，已按提交时材料快照通过并结案。",
+    alertIds: [],
+    nextReviewAt: "2026-09-28T17:00:00+08:00",
   },
 ];
 
@@ -274,6 +286,34 @@ export const seedNodes: InvestigationNode[] = [
       occurredAt: "2026-09-25T14:10:00+08:00",
     },
   },
+  {
+    id: "N-7319",
+    caseId: "CASE-2026-014",
+    position: { x: 120, y: 180 },
+    data: {
+      label: "6225 **** 7319",
+      kind: "merchant",
+      riskLevel: "low",
+      note: "商户确认高频小额为通道联调。",
+      evidenceStrength: "strong",
+      source: "商户管理系统",
+      occurredAt: "2026-09-26T11:00:00+08:00",
+    },
+  },
+  {
+    id: "N-3301",
+    caseId: "CASE-2026-014",
+    position: { x: 460, y: 180 },
+    data: {
+      label: "6214 **** 3301",
+      kind: "account",
+      riskLevel: "low",
+      note: "联调测试专用付款账户。",
+      evidenceStrength: "medium",
+      source: "核心交易系统",
+      occurredAt: "2026-09-26T11:00:00+08:00",
+    },
+  },
 ];
 
 export const seedEdges: InvestigationEdge[] = [
@@ -328,6 +368,17 @@ export const seedEdges: InvestigationEdge[] = [
     label: "登录 IP",
     occurredAt: "2026-09-28T12:06:00+08:00",
     explanation: "共享 IP 是关联线索，不能单独作为账户控制的结论。",
+  },
+  {
+    id: "E-006",
+    caseId: "CASE-2026-014",
+    source: "N-3301",
+    target: "N-7319",
+    kind: "payee",
+    label: "联调测试收款",
+    amount: 2380,
+    occurredAt: "2026-09-26T11:00:00+08:00",
+    explanation: "高频小额收款与商户书面说明一致，属通道联调测试交易。",
   },
 ];
 
@@ -384,6 +435,58 @@ export const seedEvidence: Evidence[] = [
     note: "仅证明共同收款方，未证明资金最终归属。",
     version: 1,
   },
+  {
+    id: "EV-016-001",
+    caseId: "CASE-2026-016",
+    title: "ATM 集中提现流水",
+    source: "核心交易系统",
+    strength: "strong",
+    occurredAt: "2026-09-27T09:14:00+08:00",
+    submittedAt: "2026-09-27T15:40:00+08:00",
+    submittedBy: "周明",
+    attachment: "atm-withdraw-20260927.csv",
+    note: "覆盖开户当日全部柜面与 ATM 取现记录。",
+    version: 1,
+  },
+  {
+    id: "EV-016-002",
+    caseId: "CASE-2026-016",
+    title: "异地登录位置轨迹",
+    source: "风控日志平台",
+    strength: "medium",
+    occurredAt: "2026-09-29T06:50:00+08:00",
+    submittedAt: "2026-09-29T08:40:00+08:00",
+    submittedBy: "周明",
+    attachment: "login-geo-20260929.json",
+    note: "提交复核后补进：登录城市与提现城市不完全一致，需要复核人重新评估。",
+    version: 1,
+  },
+  {
+    id: "EV-014-001",
+    caseId: "CASE-2026-014",
+    title: "商户联调情况说明",
+    source: "商户管理系统",
+    strength: "strong",
+    occurredAt: "2026-09-26T11:00:00+08:00",
+    submittedAt: "2026-09-26T14:20:00+08:00",
+    submittedBy: "宋佳",
+    attachment: "merchant-statement-014.pdf",
+    note: "商户书面确认高频小额为支付通道联调测试。",
+    version: 1,
+  },
+  {
+    id: "EV-014-002",
+    caseId: "CASE-2026-014",
+    title: "结案后补充的通道对账单",
+    source: "清算系统",
+    strength: "medium",
+    occurredAt: "2026-09-29T09:10:00+08:00",
+    submittedAt: "2026-09-29T09:30:00+08:00",
+    submittedBy: "宋佳",
+    attachment: "clearing-recon-014.xlsx",
+    note: "结案归档后补录的材料，不改变 V1 通过结论的原始快照。",
+    version: 1,
+  },
 ];
 
 export const seedConclusions: ConclusionVersion[] = [
@@ -398,6 +501,7 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "林澜",
     createdAt: "2026-09-29T08:20:00+08:00",
     reviewer: "赵平",
+    materials: [],
   },
   {
     id: "CV-016-001",
@@ -410,6 +514,16 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "周明",
     createdAt: "2026-09-29T07:55:00+08:00",
     reviewer: "赵平",
+    // 提交时只绑定了 ATM 流水；EV-016-002 是提交后补进的证据。
+    materials: [
+      {
+        kind: "evidence",
+        refId: "EV-016-001",
+        label: "ATM 集中提现流水",
+        detail: "来源：核心交易系统",
+      },
+    ],
+    materialsChangedAt: "2026-09-29T08:40:00+08:00",
   },
   {
     id: "CV-015-001",
@@ -423,6 +537,42 @@ export const seedConclusions: ConclusionVersion[] = [
     createdAt: "2026-09-28T19:20:00+08:00",
     reviewer: "赵平",
     reviewerNote: "补充商户合同与付款用途后再提交，不得以关联代替结论。",
+    materials: [
+      {
+        kind: "evidence",
+        refId: "EV-015-001",
+        label: "跨案受益关系导出",
+        detail: "来源：案件关联分析",
+      },
+    ],
+  },
+  {
+    id: "CV-014-001",
+    caseId: "CASE-2026-014",
+    version: 1,
+    status: "approved",
+    disposition: "release",
+    rationale: "商户书面说明与交易特征吻合，高频小额为支付通道联调，建议放行并持续观察。",
+    riskControls: ["联调期限额", "联调结束后复测"],
+    createdBy: "宋佳",
+    createdAt: "2026-09-28T16:30:00+08:00",
+    reviewer: "赵平",
+    reviewerNote: "材料与说明一致，按提交快照通过并结案。",
+    // 历史已通过版本保留原快照；结案后补录的 EV-014-002 不影响该版本。
+    materials: [
+      {
+        kind: "evidence",
+        refId: "EV-014-001",
+        label: "商户联调情况说明",
+        detail: "来源：商户管理系统",
+      },
+      {
+        kind: "relation",
+        refId: "E-006",
+        label: "联调测试收款",
+        detail: "收款关系",
+      },
+    ],
   },
 ];
 
@@ -458,5 +608,22 @@ export const seedAuditLogs: AuditLog[] = [
     actor: "赵平",
     action: "退回补证",
     detail: "结论退回，要求补充商户合同与交易用途。",
+  },
+  {
+    id: "LOG-1005",
+    caseId: "CASE-2026-014",
+    at: "2026-09-28T16:40:00+08:00",
+    actor: "赵平",
+    action: "复核通过",
+    detail: "结论 V1 按提交时绑定的 2 项材料快照通过并结案。",
+  },
+  {
+    id: "LOG-1006",
+    caseId: "CASE-2026-016",
+    at: "2026-09-29T08:40:00+08:00",
+    actor: "系统",
+    action: "复核材料变化",
+    detail:
+      "待复核结论 V1 的绑定材料在提交后发生变化（新增：异地登录位置轨迹），案件退回待补证；复核人只能退回或由调查员重新提交。",
   },
 ];

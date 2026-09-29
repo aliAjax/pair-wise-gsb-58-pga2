@@ -13,6 +13,12 @@ import type {
   RiskLevel,
 } from "../models/types";
 import {
+  buildBoundMaterials,
+  diffBoundMaterials,
+  getConclusionDrift,
+  getDiffFromPrevious,
+} from "../models/materials";
+import {
   appendAudit,
   createId,
   nowIso,
@@ -23,6 +29,60 @@ import {
 
 const wait = (milliseconds = 260) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+/** 找到案件当前仍处于待复核的结论（已通过 / 退回的版本不参与）。 */
+const findActiveSubmitted = (
+  database: ReturnType<typeof readDatabase>,
+  caseId: string,
+): ConclusionVersion | undefined =>
+  database.conclusions
+    .filter((item) => item.caseId === caseId && item.status === "submitted")
+    .sort((a, b) => b.version - a.version)[0];
+
+/**
+ * 案件材料发生增减后，检查待复核结论是否漂移：
+ * 漂移则让案件回到待补证，并在结论上标记材料已经变化。
+ */
+const reconcileActiveSubmission = (
+  database: ReturnType<typeof readDatabase>,
+  caseId: string,
+  changeSummary: string,
+): boolean => {
+  const active = findActiveSubmitted(database, caseId);
+  if (!active) {
+    return false;
+  }
+  const current = buildBoundMaterials(
+    database.evidence.filter((item) => item.caseId === caseId),
+    database.edges.filter((item) => item.caseId === caseId),
+  );
+  const diff = diffBoundMaterials(active.materials, current);
+  if (diff.added.length === 0 && diff.removed.length === 0) {
+    return false;
+  }
+  if (!active.materialsChangedAt) {
+    active.materialsChangedAt = nowIso();
+  }
+  const targetCase = database.cases.find((item) => item.id === caseId);
+  if (targetCase && targetCase.status !== "supplement") {
+    targetCase.status = "supplement";
+    targetCase.updatedAt = nowIso();
+  }
+  const addedNames = diff.added.map((item) => item.label).join("、");
+  const removedNames = diff.removed.map((item) => item.label).join("、");
+  appendAudit(database, {
+    caseId,
+    actor: "系统",
+    action: "复核材料变化",
+    detail:
+      `待复核结论 V${active.version} 的绑定材料在提交后发生变化` +
+      `（${changeSummary}），案件退回待补证。` +
+      `${addedNames ? `新增：${addedNames}。` : ""}` +
+      `${removedNames ? `减少：${removedNames}。` : ""}` +
+      `复核人需退回或由调查员重新提交后再通过。`,
+  });
+  return true;
+};
 
 export interface AddNodeInput {
   caseId: string;
@@ -148,17 +208,31 @@ export const bankApi = createApi({
         if (!investigationCase) {
           return { error: { status: "CUSTOM_ERROR", error: "案件不存在" } };
         }
+        const caseEvidence = database.evidence.filter(
+          (item) => item.caseId === caseId,
+        );
+        const caseEdges = database.edges.filter(
+          (item) => item.caseId === caseId,
+        );
+        const conclusions = database.conclusions
+          .filter((item) => item.caseId === caseId)
+          .sort((a, b) => b.version - a.version);
+        // 历史已通过 / 已退回版本保留提交快照，不附加漂移信息。
+        const conclusionsWithDrift = conclusions.map((conclusion, index) => {
+          const previous = conclusions[index + 1];
+          return {
+            ...conclusion,
+            drift: getConclusionDrift(conclusion, caseEvidence, caseEdges),
+            diffFromPrevious: getDiffFromPrevious(conclusion, previous),
+          };
+        });
         return {
           data: {
             case: investigationCase,
             nodes: database.nodes.filter((item) => item.caseId === caseId),
-            edges: database.edges.filter((item) => item.caseId === caseId),
-            evidence: database.evidence.filter(
-              (item) => item.caseId === caseId,
-            ),
-            conclusions: database.conclusions
-              .filter((item) => item.caseId === caseId)
-              .sort((a, b) => b.version - a.version),
+            edges: caseEdges,
+            evidence: caseEvidence,
+            conclusions: conclusionsWithDrift,
           },
         };
       },
@@ -231,7 +305,7 @@ export const bankApi = createApi({
       invalidatesTags: ["Alerts", "Case", "Audit", "Dashboard"],
     }),
     addGraphNode: builder.mutation<
-      InvestigationNode,
+      { node: InvestigationNode; materialsChanged: boolean },
       AddNodeInput
     >({
       queryFn: async ({ caseId, node, relation }) => {
@@ -264,8 +338,16 @@ export const bankApi = createApi({
           action: "加入图谱节点",
           detail: `${node.data.label} 已加入，证据强度 ${node.data.evidenceStrength}。`,
         });
+        let materialsChanged = false;
+        if (relation) {
+          materialsChanged = reconcileActiveSubmission(
+            database,
+            caseId,
+            `新增关系：${relation.label}`,
+          );
+        }
         writeDatabase(database);
-        return { data: node };
+        return { data: { node, materialsChanged } };
       },
       invalidatesTags: (_result, _error, input) => [
         { type: "Case", id: input.caseId },
@@ -293,7 +375,7 @@ export const bankApi = createApi({
       ],
     }),
     addEvidence: builder.mutation<
-      Evidence,
+      { evidence: Evidence; materialsChanged: boolean },
       Omit<Evidence, "id" | "submittedAt" | "submittedBy" | "version">
     >({
       queryFn: async (input) => {
@@ -319,8 +401,13 @@ export const bankApi = createApi({
           action: "新增证据",
           detail: `${input.title} 已登记，来源为 ${input.source}。`,
         });
+        const materialsChanged = reconcileActiveSubmission(
+          database,
+          input.caseId,
+          `新增证据：${input.title}`,
+        );
         writeDatabase(database);
-        return { data: evidence };
+        return { data: { evidence, materialsChanged } };
       },
       invalidatesTags: (_result, _error, input) => [
         { type: "Case", id: input.caseId },
@@ -341,6 +428,28 @@ export const bankApi = createApi({
       queryFn: async (input) => {
         await wait();
         const database = readDatabase();
+        const caseEvidence = database.evidence.filter(
+          (item) => item.caseId === input.caseId,
+        );
+        const caseEdges = database.edges.filter(
+          (item) => item.caseId === input.caseId,
+        );
+        const active = findActiveSubmitted(database, input.caseId);
+        if (input.submit) {
+          if (active) {
+            const current = buildBoundMaterials(caseEvidence, caseEdges);
+            const diff = diffBoundMaterials(active.materials, current);
+            const changed = diff.added.length > 0 || diff.removed.length > 0;
+            return {
+              error: {
+                status: "CUSTOM_ERROR",
+                error: changed
+                  ? `V${active.version} 提交后材料已变化且案件处于待补证，请复核人退回该版本后，再基于当前材料提交新版本。`
+                  : `V${active.version} 正在复核中，不能重复提交；如需更新，请由复核人退回后再提交新版本。`,
+              },
+            };
+          }
+        }
         const existing = database.conclusions.filter(
           (item) => item.caseId === input.caseId,
         );
@@ -356,20 +465,33 @@ export const bankApi = createApi({
           createdBy: "林澜",
           createdAt: nowIso(),
           reviewer: "赵平",
+          // 草稿不绑定材料；提交时刻固化当前证据与关系快照。
+          materials: input.submit
+            ? buildBoundMaterials(caseEvidence, caseEdges)
+            : [],
         };
         database.conclusions.unshift(conclusion);
         const targetCase = database.cases.find(
           (item) => item.id === input.caseId,
         );
         if (targetCase) {
-          targetCase.status = input.submit ? "pending_review" : "investigating";
+          if (input.submit) {
+            targetCase.status = "pending_review";
+          } else if (!active) {
+            // 已有待复核（含材料变化待补证）版本时，保存草稿不得改变案件状态。
+            targetCase.status = "investigating";
+          }
           targetCase.updatedAt = nowIso();
         }
         appendAudit(database, {
           caseId: input.caseId,
           actor: "林澜",
           action: "保存结论版本",
-          detail: `${conclusion.id} V${conclusion.version} 已${input.submit ? "提交复核" : "保存为草稿"}。`,
+          detail:
+            `${conclusion.id} V${conclusion.version} 已${input.submit ? "提交复核" : "保存为草稿"}。` +
+            (input.submit
+              ? `提交时绑定证据 ${conclusion.materials.filter((item) => item.kind === "evidence").length} 份、关系 ${conclusion.materials.filter((item) => item.kind === "relation").length} 条，后续材料增减以该快照为准。`
+              : ""),
         });
         writeDatabase(database);
         return { data: conclusion };
@@ -393,15 +515,25 @@ export const bankApi = createApi({
           return { error: { status: "CUSTOM_ERROR", error: "案件不存在" } };
         }
         if (status === "pending_review") {
-          const hasSubmitted = database.conclusions.some(
-            (item) =>
-              item.caseId === caseId && item.status === "submitted",
-          );
-          if (!hasSubmitted) {
+          const active = findActiveSubmitted(database, caseId);
+          if (!active) {
             return {
               error: {
                 status: "CUSTOM_ERROR",
                 error: "请先提交一份结论版本，再进入复核。",
+              },
+            };
+          }
+          const current = buildBoundMaterials(
+            database.evidence.filter((item) => item.caseId === caseId),
+            database.edges.filter((item) => item.caseId === caseId),
+          );
+          const diff = diffBoundMaterials(active.materials, current);
+          if (diff.added.length > 0 || diff.removed.length > 0) {
+            return {
+              error: {
+                status: "CUSTOM_ERROR",
+                error: `V${active.version} 提交后材料已变化，案件需保持待补证；请退回该版本并由调查员重新提交。`,
               },
             };
           }
@@ -442,14 +574,27 @@ export const bankApi = createApi({
         if (!conclusion) {
           return { error: { status: "CUSTOM_ERROR", error: "结论不存在" } };
         }
-        if (
-          conclusion.status !== "submitted" &&
-          conclusion.status !== "draft"
-        ) {
+        if (conclusion.status !== "submitted") {
           return {
             error: {
               status: "CUSTOM_ERROR",
-              error: "当前版本不能再次复核。",
+              error: "只有已提交复核的版本可以复核；草稿请先提交。",
+            },
+          };
+        }
+        // 通过前再次比对提交快照与当前材料，防止复核期间材料被补进。
+        const currentMaterials = buildBoundMaterials(
+          database.evidence.filter((item) => item.caseId === caseId),
+          database.edges.filter((item) => item.caseId === caseId),
+        );
+        const drift = diffBoundMaterials(conclusion.materials, currentMaterials);
+        const materialsChanged =
+          drift.added.length > 0 || drift.removed.length > 0;
+        if (decision === "approve" && materialsChanged) {
+          return {
+            error: {
+              status: "CUSTOM_ERROR",
+              error: `V${conclusion.version} 提交后材料已变化，不能通过；请退回该版本，由调查员基于当前材料重新提交。`,
             },
           };
         }
@@ -457,6 +602,7 @@ export const bankApi = createApi({
         conclusion.reviewerNote = reviewerNote;
         const targetCase = database.cases.find((item) => item.id === caseId);
         if (targetCase) {
+          // 材料已变化时退回保持待补证；材料一致的退回也进入待补证流程。
           targetCase.status =
             decision === "approve" ? "closed" : "supplement";
           targetCase.updatedAt = nowIso();
@@ -465,7 +611,10 @@ export const bankApi = createApi({
           caseId,
           actor: "赵平",
           action: decision === "approve" ? "复核通过" : "退回补证",
-          detail: `${conclusion.id} 已${decision === "approve" ? "通过" : "退回"}。${reviewerNote}`,
+          detail:
+            decision === "approve"
+              ? `${conclusion.id} V${conclusion.version} 已通过，结论按提交时绑定的 ${conclusion.materials.length} 项材料快照生效。${reviewerNote}`
+              : `${conclusion.id} V${conclusion.version} 已退回${materialsChanged ? "（提交后材料发生变化）" : ""}，案件进入待补证。${reviewerNote}`,
         });
         writeDatabase(database);
         return { data: conclusion };

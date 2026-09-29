@@ -27,7 +27,7 @@ export interface MockDatabase {
   auditLogs: AuditLog[];
 }
 
-const STORAGE_KEY = "bank-fraud-investigation-db-v1";
+const STORAGE_KEY = "bank-fraud-investigation-db-v2";
 
 const createSeedDatabase = (): MockDatabase => ({
   alerts: structuredClone(seedAlerts),
